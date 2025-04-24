@@ -1,8 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../models/user_profile.dart';
 
 class UserService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
 
   // Создание или обновление профиля пользователя
   Future<void> updateUserProfile(UserProfile profile) async {
@@ -18,13 +20,30 @@ class UserService {
   }
 
   // Получение профиля пользователя
-  Future<UserProfile?> getUserProfile(String userId) async {
+  Future<Map<String, dynamic>> getUserProfile() async {
     try {
-      final doc = await _firestore.collection('users').doc(userId).get();
-      if (doc.exists && doc.data() != null) {
-        return UserProfile.fromMap(doc.data()!, userId);
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('Пользователь не авторизован');
       }
-      return null;
+
+      final doc = await _firestore.collection('users').doc(user.uid).get();
+      if (!doc.exists) {
+        throw Exception('Профиль пользователя не найден');
+      }
+
+      final data = doc.data()!;
+
+      // Преобразуем Timestamp в DateTime
+      final createdAt = data['createdAt'] as Timestamp?;
+
+      return {
+        'name': data['name'] ?? '',
+        'email': data['email'] ?? '',
+        'createdAt':
+            createdAt?.toDate().millisecondsSinceEpoch ??
+            DateTime.now().millisecondsSinceEpoch,
+      };
     } catch (e) {
       print('Ошибка при получении профиля: $e');
       rethrow;

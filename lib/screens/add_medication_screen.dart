@@ -2,6 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/medication.dart';
 import '../services/medication_service.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import '../services/medication_data_service.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:mobile_scanner/src/objects/barcode.dart';
+import '../services/barcode_logger.dart';
 
 class AddMedicationScreen extends StatefulWidget {
   final String kitId;
@@ -18,8 +25,10 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
   final _quantityController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _barcodeController = TextEditingController();
+  final _amountController = TextEditingController();
 
   final MedicationService _medicationService = MedicationService();
+  final MedicationDataService _medicationDataService = MedicationDataService();
 
   DateTime _expiryDate = DateTime.now().add(
     const Duration(days: 365),
@@ -34,11 +43,18 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
   bool _isLoading = false;
 
   @override
+  void initState() {
+    super.initState();
+    _medicationDataService.loadMedicationData();
+  }
+
+  @override
   void dispose() {
     _nameController.dispose();
     _quantityController.dispose();
     _descriptionController.dispose();
     _barcodeController.dispose();
+    _amountController.dispose();
     super.dispose();
   }
 
@@ -130,6 +146,66 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     }
   }
 
+  Future<void> _scanBarcode() async {
+    try {
+      final result = await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder:
+              (context) => Scaffold(
+                appBar: AppBar(
+                  title: const Text('Scan Barcode'),
+                  backgroundColor: Colors.red,
+                ),
+                body: MobileScanner(
+                  onDetect: (capture) async {
+                    final List<Barcode> barcodes = capture.barcodes;
+                    if (barcodes.isNotEmpty) {
+                      final String code = barcodes.first.rawValue ?? '';
+                      final medicationDetails = _medicationDataService
+                          .findMedicationByBarcode(code);
+
+                      // Log the barcode scan result
+                      await BarcodeLogger.logBarcode(
+                        code,
+                        medicationDetails?['name'],
+                      );
+
+                      if (medicationDetails != null) {
+                        setState(() {
+                          _nameController.text = medicationDetails['name'];
+                          _barcodeController.text = code;
+                          if (medicationDetails['amount'] != null) {
+                            _quantityController.text =
+                                medicationDetails['amount'].toString();
+                          }
+                          _descriptionController.text =
+                              medicationDetails['description'] ?? '';
+                        });
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Medication not found in database. Barcode: $code',
+                            ),
+                            duration: const Duration(seconds: 5),
+                          ),
+                        );
+                      }
+                      Navigator.pop(context);
+                    }
+                  },
+                ),
+              ),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error scanning barcode: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -159,10 +235,14 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
                       // Название препарата
                       TextFormField(
                         controller: _nameController,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Название препарата',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.medication),
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.medication),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.qr_code_scanner),
+                            onPressed: _scanBarcode,
+                          ),
                         ),
                         validator: (value) {
                           if (value == null || value.isEmpty) {
@@ -431,10 +511,14 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
                       // Штрих-код (опционально)
                       TextFormField(
                         controller: _barcodeController,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Штрих-код (опционально)',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.qr_code),
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.qr_code),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.qr_code_scanner),
+                            onPressed: _scanBarcode,
+                          ),
                         ),
                       ),
                       const SizedBox(height: 32),

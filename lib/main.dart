@@ -10,6 +10,7 @@ import 'screens/register_screen.dart';
 import 'screens/reset_password_screen.dart';
 import 'screens/first_aid_kits_list_screen.dart';
 import 'widgets/bottom_navigation.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 void main() async {
   // Инициализация Flutter и Firebase
@@ -66,28 +67,35 @@ class MyApp extends StatelessWidget {
       child: MaterialApp(
         title: 'Аптечки',
         debugShowCheckedModeBanner: false, // Убираем баннер Debug
-        theme: ThemeData(
-          // This is the theme of your application.
-          //
-          // TRY THIS: Try running your application with "flutter run". You'll see
-          // the application has a purple toolbar. Then, without quitting the app,
-          // try changing the seedColor in the colorScheme below to Colors.green
-          // and then invoke "hot reload" (save your changes or press the "hot
-          // reload" button in a Flutter-supported IDE, or press "r" if you used
-          // the command line to start the app).
-          //
-          // Notice that the counter didn't reset back to zero; the application
-          // state is not lost during the reload. To reset the state, use hot
-          // restart instead.
-          //
-          // This works for code too, not just values: Most code changes can be
-          // tested with just a hot reload.
+      theme: ThemeData(
+        // This is the theme of your application.
+        //
+        // TRY THIS: Try running your application with "flutter run". You'll see
+        // the application has a purple toolbar. Then, without quitting the app,
+        // try changing the seedColor in the colorScheme below to Colors.green
+        // and then invoke "hot reload" (save your changes or press the "hot
+        // reload" button in a Flutter-supported IDE, or press "r" if you used
+        // the command line to start the app).
+        //
+        // Notice that the counter didn't reset back to zero; the application
+        // state is not lost during the reload. To reset the state, use hot
+        // restart instead.
+        //
+        // This works for code too, not just values: Most code changes can be
+        // tested with just a hot reload.
           colorScheme: ColorScheme.fromSeed(
             seedColor: Colors.red,
             brightness: Brightness.light,
           ),
           useMaterial3: true,
         ),
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: const [Locale('ru', 'RU'), Locale('en', 'US')],
+        locale: const Locale('ru', 'RU'),
         // Определяем маршруты в приложении
         routes: {
           '/': (context) => const AuthWrapper(),

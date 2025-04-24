@@ -874,7 +874,7 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
 
   String _getInitials(UserProfile profile) {
     if (profile.firstName.isEmpty && profile.lastName.isEmpty) {
-      return '?';
+      return '👤';
     }
 
     String initials = '';

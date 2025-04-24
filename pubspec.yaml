@@ -30,23 +30,25 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
+  flutter_localizations:
+    sdk: flutter
   uuid: ^4.2.1
-  intl: ^0.18.1
-  firebase_core: ^2.17.0
-  firebase_auth: ^4.10.0
+  intl: ^0.19.0
+  firebase_core: ^2.24.2
+  firebase_auth: ^4.15.3
   provider: ^6.0.5
-  cloud_firestore: ^4.17.5
+  cloud_firestore: ^4.13.6
   table_calendar: ^3.0.9
   pdf: ^3.10.7
-  path_provider: ^2.1.2
+  path_provider: ^2.1.1
   open_file: ^3.3.2
   share_plus: ^7.2.2
   printing: ^5.14.2
   google_fonts: ^6.2.1
+  mobile_scanner: ^3.5.6
+  google_mlkit_commons: ^0.6.1
+  google_mlkit_text_recognition: ^0.11.0
+  image_picker: ^1.0.7
 
 dev_dependencies:
   flutter_test:
@@ -73,6 +75,9 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
     - assets/fonts/
+    - assets/aurora_iventory_complete_v2_20250301.json
+    - assets/fonts/Roboto-Regular.ttf
+    - assets/fonts/Roboto-Bold.ttf
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/assets-and-images/#resolution-aware

@@ -410,9 +410,29 @@ class FamilyGroupService {
               .where(FieldPath.documentId, whereIn: userIds)
               .get();
 
-      return userDocs.docs
-          .map((doc) => UserProfile.fromMap(doc.data(), doc.id))
-          .toList();
+      return userDocs.docs.map((doc) {
+        final data = doc.data();
+
+        // Функция для безопасного преобразования даты
+        DateTime? parseDate(dynamic value) {
+          if (value == null) return null;
+          if (value is Timestamp) return value.toDate();
+          if (value is int) return DateTime.fromMillisecondsSinceEpoch(value);
+          return null;
+        }
+
+        return UserProfile(
+          userId: doc.id,
+          firstName: data['firstName'] ?? '',
+          lastName: data['lastName'] ?? '',
+          middleName: data['middleName'],
+          phoneNumber: data['phoneNumber'],
+          birthDate: parseDate(data['birthDate']),
+          email: data['email'] ?? '',
+          createdAt: parseDate(data['createdAt']),
+          updatedAt: parseDate(data['updatedAt']),
+        );
+      }).toList();
     } catch (e) {
       print('Ошибка при получении профилей участников группы: $e');
       rethrow;

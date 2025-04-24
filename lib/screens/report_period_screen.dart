@@ -9,6 +9,9 @@ import 'package:share_plus/share_plus.dart';
 import '../models/medication_schedule.dart';
 import '../services/medication_schedule_service.dart';
 import '../services/auth_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/services.dart';
 
 class ReportPeriodScreen extends StatefulWidget {
   const ReportPeriodScreen({super.key});
@@ -18,70 +21,46 @@ class ReportPeriodScreen extends StatefulWidget {
 }
 
 class _ReportPeriodScreenState extends State<ReportPeriodScreen> {
-  final MedicationScheduleService _scheduleService =
-      MedicationScheduleService();
-  final AuthService _authService = AuthService();
-
-  DateTime _startDate = DateTime.now().subtract(const Duration(days: 30));
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  DateTime _startDate = DateTime.now().subtract(const Duration(days: 7));
   DateTime _endDate = DateTime.now();
-
   bool _isLoading = false;
-  String? _errorMessage;
   Map<String, dynamic>? _reportData;
+  late pw.Font _robotoFont;
+  late pw.Font _robotoBoldFont;
 
   @override
   void initState() {
     super.initState();
+    _loadFonts();
   }
 
-  // Выбор начальной даты
-  Future<void> _selectStartDate(BuildContext context) async {
+  Future<void> _loadFonts() async {
+    final robotoData = await rootBundle.load('assets/fonts/Roboto-Regular.ttf');
+    final robotoBoldData = await rootBundle.load(
+      'assets/fonts/Roboto-Bold.ttf',
+    );
+
+    _robotoFont = pw.Font.ttf(robotoData);
+    _robotoBoldFont = pw.Font.ttf(robotoBoldData);
+  }
+
+  Future<void> _selectDate(BuildContext context, bool isStartDate) async {
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: _startDate,
+      initialDate: isStartDate ? _startDate : _endDate,
       firstDate: DateTime(2020),
-      lastDate: _endDate,
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: ColorScheme.light(
-              primary: Theme.of(context).colorScheme.primary,
-            ),
-          ),
-          child: child!,
-        );
-      },
-    );
-
-    if (picked != null && picked != _startDate) {
-      setState(() {
-        _startDate = picked;
-      });
-    }
-  }
-
-  // Выбор конечной даты
-  Future<void> _selectEndDate(BuildContext context) async {
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: _endDate,
-      firstDate: _startDate,
       lastDate: DateTime.now(),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: ColorScheme.light(
-              primary: Theme.of(context).colorScheme.primary,
-            ),
-          ),
-          child: child!,
-        );
-      },
+      locale: const Locale('ru', 'RU'),
     );
-
-    if (picked != null && picked != _endDate) {
+    if (picked != null) {
       setState(() {
-        _endDate = picked;
+        if (isStartDate) {
+          _startDate = picked;
+        } else {
+          _endDate = picked;
+        }
       });
     }
   }
@@ -90,291 +69,246 @@ class _ReportPeriodScreenState extends State<ReportPeriodScreen> {
   Future<void> _loadReportData() async {
     setState(() {
       _isLoading = true;
-      _errorMessage = null;
+      _reportData = null;
     });
 
     try {
-      final userId = _authService.currentUser?.uid;
-      if (userId == null) {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = 'Необходимо войти в систему';
-        });
+      final user = _auth.currentUser;
+      if (user == null) {
+        print('Пользователь не авторизован');
         return;
       }
 
-      // Получаем статистику по приему лекарств за выбранный период
-      final statistics = await _scheduleService.getStatistics(
-        userId,
-        _startDate,
-        _endDate,
-      );
+      print('Начало загрузки данных для отчета');
+      print('Период: с ${_startDate.toString()} по ${_endDate.toString()}');
+
+      // Получаем все записи о приемах лекарств пользователя
+      final schedules =
+          await _firestore
+              .collection('medication_schedules')
+              .where('userId', isEqualTo: user.uid)
+              .get();
+
+      print('Найдено расписаний: ${schedules.docs.length}');
+
+      int totalScheduled = 0;
+      int totalTaken = 0;
+      final medicationStats = <String, Map<String, int>>{};
+
+      // Обрабатываем каждое расписание
+      for (var schedule in schedules.docs) {
+        final scheduleData = schedule.data();
+        final medicationName = scheduleData['medicationName'] as String;
+        final date = DateTime.fromMillisecondsSinceEpoch(
+          scheduleData['date'] as int,
+        );
+        final time = scheduleData['time'] as String;
+        final taken = scheduleData['taken'] as bool? ?? false;
+        final takenAt = scheduleData['takenAt'] as int?;
+
+        print('Обработка лекарства: $medicationName');
+        print('Дата: $date, Время: $time, Принято: $taken');
+
+        // Пропускаем записи вне выбранного периода
+        if (date.isBefore(_startDate) || date.isAfter(_endDate)) {
+          print('Пропущена запись вне периода: ${date.toString()}');
+          continue;
+        }
+
+        // Инициализируем статистику для лекарства, если еще не существует
+        if (!medicationStats.containsKey(medicationName)) {
+          medicationStats[medicationName] = {'scheduled': 0, 'taken': 0};
+        }
+
+        totalScheduled++;
+        if (taken) totalTaken++;
+
+        medicationStats[medicationName]!['scheduled'] =
+            medicationStats[medicationName]!['scheduled']! + 1;
+        if (taken) {
+          medicationStats[medicationName]!['taken'] =
+              medicationStats[medicationName]!['taken']! + 1;
+        }
+      }
+
+      print('Итоговая статистика:');
+      print('Всего запланировано: $totalScheduled');
+      print('Всего принято: $totalTaken');
+      print('Статистика по лекарствам: $medicationStats');
+
+      final statistics = {
+        'totalScheduled': totalScheduled,
+        'totalTaken': totalTaken,
+        'completionRate':
+            totalScheduled > 0
+                ? ((totalTaken / totalScheduled) * 100).round()
+                : 0,
+        'medicationStats': medicationStats,
+      };
 
       setState(() {
         _reportData = statistics;
-        _isLoading = false;
       });
-    } catch (e) {
+    } catch (e, stackTrace) {
+      print('Ошибка при загрузке данных: $e');
+      print('Стек вызовов: $stackTrace');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка при загрузке данных: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Ошибка при загрузке данных: $e';
       });
     }
   }
 
   // Генерация PDF-отчета
-  Future<File> _generatePDF() async {
+  Future<File> _generatePDFReport() async {
     final pdf = pw.Document();
-
-    // Загружаем шрифт для поддержки кириллицы
-    final font = pw.Font.helvetica();
-    final fontBold = pw.Font.helveticaBold();
-
-    // Форматирование дат
     final dateFormat = DateFormat('dd.MM.yyyy');
 
     // Добавляем страницу с отчетом
     pdf.addPage(
-      pw.Page(
+      pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
         build: (pw.Context context) {
-          return pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              // Заголовок отчета
-              pw.Center(
-                child: pw.Text(
-                  'Отчет о приеме лекарств',
-                  style: pw.TextStyle(font: fontBold, fontSize: 20),
-                ),
+          return [
+            // Заголовок отчета
+            pw.Header(
+              level: 0,
+              child: pw.Text(
+                'Отчет о приемах лекарств',
+                style: pw.TextStyle(font: _robotoBoldFont, fontSize: 20),
               ),
-              pw.SizedBox(height: 10),
+            ),
 
-              // Период отчета
-              pw.Center(
-                child: pw.Text(
-                  'Период: ${dateFormat.format(_startDate)} - ${dateFormat.format(_endDate)}',
-                  style: pw.TextStyle(font: font, fontSize: 14),
-                ),
-              ),
-              pw.SizedBox(height: 20),
+            // Период отчета
+            pw.Paragraph(
+              text:
+                  'Период: с ${dateFormat.format(_startDate)} по ${dateFormat.format(_endDate)}',
+              style: pw.TextStyle(font: _robotoFont),
+            ),
 
-              // Общая статистика
-              pw.Container(
-                padding: const pw.EdgeInsets.all(10),
-                decoration: pw.BoxDecoration(
-                  border: pw.Border.all(),
-                  borderRadius: const pw.BorderRadius.all(
-                    pw.Radius.circular(5),
-                  ),
-                ),
-                child: pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.start,
-                  children: [
-                    pw.Text(
-                      'Общая статистика:',
-                      style: pw.TextStyle(font: fontBold, fontSize: 16),
+            // Общая статистика
+            pw.Header(
+              level: 1,
+              text: 'Общая статистика',
+              textStyle: pw.TextStyle(font: _robotoBoldFont, fontSize: 16),
+            ),
+            pw.Paragraph(
+              text:
+                  'Всего запланировано приемов: ${_reportData?['totalScheduled'] ?? 0}',
+              style: pw.TextStyle(font: _robotoFont),
+            ),
+            pw.Paragraph(
+              text: 'Принято лекарств: ${_reportData?['totalTaken'] ?? 0}',
+              style: pw.TextStyle(font: _robotoFont),
+            ),
+            pw.Paragraph(
+              text:
+                  'Процент выполнения: ${_reportData?['completionRate'] ?? 0}%',
+              style: pw.TextStyle(font: _robotoFont),
+            ),
+
+            // Статистика по лекарствам
+            pw.Header(
+              level: 1,
+              text: 'Статистика по лекарствам',
+              textStyle: pw.TextStyle(font: _robotoBoldFont, fontSize: 16),
+            ),
+            ...(_reportData?['medicationStats'] as Map<String, dynamic>? ?? {})
+                .entries
+                .map((entry) {
+                  final medicationName = entry.key;
+                  final stats = entry.value as Map<String, int>;
+                  final scheduled = stats['scheduled'] ?? 0;
+                  final taken = stats['taken'] ?? 0;
+                  final rate =
+                      scheduled > 0 ? ((taken / scheduled) * 100).round() : 0;
+
+                  return [
+                    pw.Header(
+                      level: 2,
+                      text: medicationName,
+                      textStyle: pw.TextStyle(
+                        font: _robotoBoldFont,
+                        fontSize: 14,
+                      ),
+                    ),
+                    pw.Paragraph(
+                      text: 'Запланировано: $scheduled',
+                      style: pw.TextStyle(font: _robotoFont),
+                    ),
+                    pw.Paragraph(
+                      text: 'Принято: $taken',
+                      style: pw.TextStyle(font: _robotoFont),
+                    ),
+                    pw.Paragraph(
+                      text: 'Процент выполнения: $rate%',
+                      style: pw.TextStyle(font: _robotoFont),
                     ),
                     pw.SizedBox(height: 10),
-                    pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                      children: [
-                        pw.Text(
-                          'Всего запланировано приемов:',
-                          style: pw.TextStyle(font: font),
-                        ),
-                        pw.Text(
-                          '${_reportData?['totalScheduled'] ?? 0}',
-                          style: pw.TextStyle(font: fontBold),
-                        ),
-                      ],
-                    ),
-                    pw.SizedBox(height: 5),
-                    pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                      children: [
-                        pw.Text(
-                          'Принято лекарств:',
-                          style: pw.TextStyle(font: font),
-                        ),
-                        pw.Text(
-                          '${_reportData?['totalTaken'] ?? 0}',
-                          style: pw.TextStyle(font: fontBold),
-                        ),
-                      ],
-                    ),
-                    pw.SizedBox(height: 5),
-                    pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                      children: [
-                        pw.Text(
-                          'Процент выполнения:',
-                          style: pw.TextStyle(font: font),
-                        ),
-                        pw.Text(
-                          '${_reportData?['completionRate'] ?? 0}%',
-                          style: pw.TextStyle(font: fontBold),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              pw.SizedBox(height: 20),
+                  ];
+                })
+                .expand((element) => element)
+                .toList(),
 
-              // Статистика по медикаментам
-              pw.Text(
-                'Статистика по медикаментам:',
-                style: pw.TextStyle(font: fontBold, fontSize: 16),
-              ),
-              pw.SizedBox(height: 10),
-
-              // Таблица с медикаментами
-              pw.Table(
-                border: pw.TableBorder.all(),
-                columnWidths: {
-                  0: const pw.FlexColumnWidth(3),
-                  1: const pw.FlexColumnWidth(1),
-                  2: const pw.FlexColumnWidth(1),
-                  3: const pw.FlexColumnWidth(1),
-                },
-                children: [
-                  // Заголовок таблицы
-                  pw.TableRow(
-                    decoration: const pw.BoxDecoration(
-                      color: PdfColors.grey300,
-                    ),
-                    children: [
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(5),
-                        child: pw.Text(
-                          'Название',
-                          style: pw.TextStyle(font: fontBold),
-                        ),
-                      ),
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(5),
-                        child: pw.Text(
-                          'План',
-                          style: pw.TextStyle(font: fontBold),
-                        ),
-                      ),
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(5),
-                        child: pw.Text(
-                          'Факт',
-                          style: pw.TextStyle(font: fontBold),
-                        ),
-                      ),
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(5),
-                        child: pw.Text(
-                          '%',
-                          style: pw.TextStyle(font: fontBold),
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  // Данные по медикаментам
-                  ..._getMedicationRows(font),
-                ],
-              ),
-
-              // Дата формирования отчета
-              pw.Spacer(),
-              pw.Divider(),
-              pw.Text(
-                'Отчет сформирован: ${dateFormat.format(DateTime.now())}',
+            // Дата формирования отчета
+            pw.Container(
+              alignment: pw.Alignment.centerRight,
+              margin: const pw.EdgeInsets.only(top: 20),
+              child: pw.Text(
+                'Дата формирования: ${dateFormat.format(DateTime.now())}',
                 style: pw.TextStyle(
-                  font: font,
+                  font: _robotoFont,
                   fontSize: 10,
-                  color: PdfColors.grey700,
+                  color: PdfColors.grey,
                 ),
               ),
-            ],
-          );
+            ),
+          ];
         },
       ),
     );
 
-    // Сохраняем PDF в файл
+    // Сохраняем PDF во временный файл
     final output = await getTemporaryDirectory();
-    final file = File('${output.path}/medication_report.pdf');
+    final file = File('${output.path}/отчет_о_приемах.pdf');
     await file.writeAsBytes(await pdf.save());
 
     return file;
   }
 
-  // Получение строк таблицы с медикаментами
-  List<pw.TableRow> _getMedicationRows(pw.Font font) {
-    final rows = <pw.TableRow>[];
-
-    final medicationStats =
-        _reportData?['medicationStats'] as Map<String, dynamic>? ?? {};
-
-    medicationStats.forEach((medicationId, stats) {
-      final name = stats['name'] as String? ?? 'Неизвестный медикамент';
-      final scheduled = stats['scheduled'] as int? ?? 0;
-      final taken = stats['taken'] as int? ?? 0;
-      final percent =
-          scheduled > 0 ? ((taken / scheduled) * 100).toStringAsFixed(1) : '0';
-
-      rows.add(
-        pw.TableRow(
-          children: [
-            pw.Padding(
-              padding: const pw.EdgeInsets.all(5),
-              child: pw.Text(name, style: pw.TextStyle(font: font)),
-            ),
-            pw.Padding(
-              padding: const pw.EdgeInsets.all(5),
-              child: pw.Text('$scheduled', style: pw.TextStyle(font: font)),
-            ),
-            pw.Padding(
-              padding: const pw.EdgeInsets.all(5),
-              child: pw.Text('$taken', style: pw.TextStyle(font: font)),
-            ),
-            pw.Padding(
-              padding: const pw.EdgeInsets.all(5),
-              child: pw.Text('$percent%', style: pw.TextStyle(font: font)),
-            ),
-          ],
-        ),
+  Future<void> _shareReport() async {
+    try {
+      final file = await _generatePDFReport();
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        text:
+            'Отчет о приемах лекарств за период с ${DateFormat('dd.MM.yyyy').format(_startDate)} по ${DateFormat('dd.MM.yyyy').format(_endDate)}',
       );
-    });
-
-    return rows;
-  }
-
-  // Открытие PDF-файла
-  Future<void> _openPDF(File file) async {
-    final result = await OpenFile.open(file.path);
-    if (result.type != ResultType.done) {
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Ошибка при открытии файла: ${result.message}'),
+            content: Text('Ошибка при отправке отчета: $e'),
+            backgroundColor: Colors.red,
           ),
         );
       }
     }
   }
 
-  // Поделиться PDF-файлом
-  Future<void> _sharePDF(File file) async {
-    await Share.shareXFiles(
-      [XFile(file.path)],
-      text:
-          'Отчет о приеме лекарств за период ${DateFormat('dd.MM.yyyy').format(_startDate)} - ${DateFormat('dd.MM.yyyy').format(_endDate)}',
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Отчет о приеме лекарств'),
+        title: const Text('Отчет о приемах'),
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
       ),
@@ -383,346 +317,189 @@ class _ReportPeriodScreenState extends State<ReportPeriodScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Выбор периода
+            const Text(
+              'Выберите период для отчета',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16.0),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Выберите период:',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+                    ListTile(
+                      title: const Text('Начальная дата'),
+                      subtitle: Text(
+                        DateFormat('dd.MM.yyyy').format(_startDate),
                       ),
+                      trailing: const Icon(Icons.calendar_today),
+                      onTap: () => _selectDate(context, true),
                     ),
-                    const SizedBox(height: 16),
-
-                    // Начальная дата
-                    Row(
-                      children: [
-                        const Text(
-                          'С:',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: GestureDetector(
-                            onTap: () => _selectStartDate(context),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 12,
-                              ),
-                              decoration: BoxDecoration(
-                                border: Border.all(color: Colors.grey),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.calendar_today),
-                                  const SizedBox(width: 12),
-                                  Text(
-                                    DateFormat('dd.MM.yyyy').format(_startDate),
-                                    style: const TextStyle(fontSize: 16),
-                                  ),
-                                  const Spacer(),
-                                  const Icon(
-                                    Icons.arrow_drop_down,
-                                    color: Colors.grey,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Конечная дата
-                    Row(
-                      children: [
-                        const Text(
-                          'По:',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: GestureDetector(
-                            onTap: () => _selectEndDate(context),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 12,
-                              ),
-                              decoration: BoxDecoration(
-                                border: Border.all(color: Colors.grey),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.calendar_today),
-                                  const SizedBox(width: 12),
-                                  Text(
-                                    DateFormat('dd.MM.yyyy').format(_endDate),
-                                    style: const TextStyle(fontSize: 16),
-                                  ),
-                                  const Spacer(),
-                                  const Icon(
-                                    Icons.arrow_drop_down,
-                                    color: Colors.grey,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Кнопка загрузки данных
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: _isLoading ? null : _loadReportData,
-                        icon: const Icon(Icons.refresh),
-                        label: const Text('Загрузить данные'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor:
-                              Theme.of(context).colorScheme.primary,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                      ),
+                    const Divider(),
+                    ListTile(
+                      title: const Text('Конечная дата'),
+                      subtitle: Text(DateFormat('dd.MM.yyyy').format(_endDate)),
+                      trailing: const Icon(Icons.calendar_today),
+                      onTap: () => _selectDate(context, false),
                     ),
                   ],
                 ),
               ),
             ),
-
-            const SizedBox(height: 16),
-
-            // Отображение данных отчета
-            Expanded(
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _isLoading ? null : _loadReportData,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
               child:
                   _isLoading
-                      ? const Center(child: CircularProgressIndicator())
-                      : _errorMessage != null
-                      ? Center(child: Text(_errorMessage!))
-                      : _reportData == null
-                      ? const Center(
-                        child: Text(
-                          'Выберите период и нажмите "Загрузить данные"',
-                          textAlign: TextAlign.center,
-                        ),
-                      )
-                      : SingleChildScrollView(
-                        child: Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16.0),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                // Общая статистика
-                                const Text(
-                                  'Общая статистика:',
-                                  style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                _buildStatRow(
-                                  'Всего запланировано приемов:',
-                                  '${_reportData!['totalScheduled']}',
-                                ),
-                                _buildStatRow(
-                                  'Принято лекарств:',
-                                  '${_reportData!['totalTaken']}',
-                                ),
-                                _buildStatRow(
-                                  'Процент выполнения:',
-                                  '${_reportData!['completionRate']}%',
-                                ),
-                                const SizedBox(height: 16),
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : const Text(
+                        'Сформировать отчет',
+                        style: TextStyle(fontSize: 16),
+                      ),
+            ),
+            const SizedBox(height: 20),
 
-                                // Статистика по медикаментам
-                                const Text(
-                                  'Статистика по медикаментам:',
-                                  style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+            // Отображение данных отчета
+            if (_isLoading)
+              const Center(child: CircularProgressIndicator())
+            else if (_reportData == null)
+              const Center(
+                child: Text(
+                  'Выберите период и нажмите "Сформировать отчет"',
+                  style: TextStyle(fontSize: 16),
+                ),
+              )
+            else
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Общая статистика',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
                                 ),
-                                const SizedBox(height: 8),
-
-                                // Таблица с медикаментами
-                                Table(
-                                  border: TableBorder.all(
-                                    color: Colors.grey.shade300,
-                                  ),
-                                  columnWidths: const {
-                                    0: FlexColumnWidth(3),
-                                    1: FlexColumnWidth(1),
-                                    2: FlexColumnWidth(1),
-                                    3: FlexColumnWidth(1),
-                                  },
-                                  children: [
-                                    // Заголовок таблицы
-                                    TableRow(
-                                      decoration: BoxDecoration(
-                                        color: Colors.grey.shade200,
-                                      ),
-                                      children: const [
-                                        Padding(
-                                          padding: EdgeInsets.all(8.0),
-                                          child: Text(
-                                            'Название',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ),
-                                        Padding(
-                                          padding: EdgeInsets.all(8.0),
-                                          child: Text(
-                                            'План',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ),
-                                        Padding(
-                                          padding: EdgeInsets.all(8.0),
-                                          child: Text(
-                                            'Факт',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ),
-                                        Padding(
-                                          padding: EdgeInsets.all(8.0),
-                                          child: Text(
-                                            '%',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-
-                                    // Данные по медикаментам
-                                    ..._buildMedicationRows(),
-                                  ],
-                                ),
-                              ],
-                            ),
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                'Всего запланировано: ${_reportData!['totalScheduled']}',
+                                style: const TextStyle(fontSize: 16),
+                              ),
+                              Text(
+                                'Принято: ${_reportData!['totalTaken']}',
+                                style: const TextStyle(fontSize: 16),
+                              ),
+                              Text(
+                                'Процент выполнения: ${_reportData!['completionRate']}%',
+                                style: const TextStyle(fontSize: 16),
+                              ),
+                            ],
                           ),
                         ),
                       ),
-            ),
+                      const SizedBox(height: 20),
+                      const Text(
+                        'Статистика по лекарствам',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      ...(_reportData!['medicationStats']
+                                  as Map<String, dynamic>? ??
+                              {})
+                          .entries
+                          .map((entry) {
+                            final medicationName = entry.key;
+                            final stats = entry.value as Map<String, int>;
+                            final scheduled = stats['scheduled'] ?? 0;
+                            final taken = stats['taken'] ?? 0;
+                            final rate =
+                                scheduled > 0
+                                    ? ((taken / scheduled) * 100).round()
+                                    : 0;
+
+                            return Card(
+                              child: Padding(
+                                padding: const EdgeInsets.all(16.0),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      medicationName,
+                                      style: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Text('Запланировано: $scheduled'),
+                                    Text('Принято: $taken'),
+                                    Text('Процент выполнения: $rate%'),
+                                  ],
+                                ),
+                              ),
+                            );
+                          })
+                          .toList(),
+                    ],
+                  ),
+                ),
+              ),
 
             // Кнопки действий с отчетом
-            if (_reportData != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 16.0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ElevatedButton.icon(
+            if (_reportData != null) ...[
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
                       onPressed: () async {
-                        final file = await _generatePDF();
-                        if (mounted) {
-                          _openPDF(file);
-                        }
+                        final file = await _generatePDFReport();
+                        await OpenFile.open(file.path);
                       },
-                      icon: const Icon(Icons.picture_as_pdf),
-                      label: const Text('Открыть PDF'),
+                      icon: const Icon(Icons.preview),
+                      label: const Text('Просмотреть'),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blue,
+                        backgroundColor: Theme.of(context).colorScheme.primary,
                         foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
                     ),
-                    ElevatedButton.icon(
-                      onPressed: () async {
-                        final file = await _generatePDF();
-                        if (mounted) {
-                          _sharePDF(file);
-                        }
-                      },
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _shareReport,
                       icon: const Icon(Icons.share),
                       label: const Text('Поделиться'),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
+                        backgroundColor: Theme.of(context).colorScheme.primary,
                         foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
+            ],
           ],
         ),
       ),
     );
-  }
-
-  // Построение строки статистики
-  Widget _buildStatRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
-        ],
-      ),
-    );
-  }
-
-  // Построение строк таблицы с медикаментами
-  List<TableRow> _buildMedicationRows() {
-    final rows = <TableRow>[];
-
-    final medicationStats =
-        _reportData!['medicationStats'] as Map<String, dynamic>? ?? {};
-
-    medicationStats.forEach((medicationId, stats) {
-      final name = stats['name'] as String? ?? 'Неизвестный медикамент';
-      final scheduled = stats['scheduled'] as int? ?? 0;
-      final taken = stats['taken'] as int? ?? 0;
-      final percent =
-          scheduled > 0 ? ((taken / scheduled) * 100).toStringAsFixed(1) : '0';
-
-      rows.add(
-        TableRow(
-          children: [
-            Padding(padding: const EdgeInsets.all(8.0), child: Text(name)),
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Text('$scheduled'),
-            ),
-            Padding(padding: const EdgeInsets.all(8.0), child: Text('$taken')),
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Text('$percent%'),
-            ),
-          ],
-        ),
-      );
-    });
-
-    return rows;
   }
 }

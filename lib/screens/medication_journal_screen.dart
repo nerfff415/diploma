@@ -478,14 +478,15 @@ class _MedicationJournalScreenState extends State<MedicationJournalScreen> {
                     ),
                     child: Row(
                       children: [
-                        Text(
-                          'Прием лекарств на ${DateFormat('dd.MM.yyyy').format(_selectedDay)}',
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
+                        Expanded(
+                          child: Text(
+                            'Прием лекарств на ${DateFormat('dd.MM.yyyy').format(_selectedDay)}',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ),
-                        const Spacer(),
                         TextButton.icon(
                           onPressed: _navigateToAddSchedule,
                           icon: const Icon(Icons.add),

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
@@ -8,43 +9,55 @@ import 'package:share_plus/share_plus.dart';
 import 'package:open_file/open_file.dart';
 import 'package:printing/printing.dart';
 import '../models/medication_schedule.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class ReportService {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+
   /// Генерирует PDF-отчет о принятых медикаментах за указанный период
   Future<File> generateMedicationReport({
-    required List<MedicationSchedule> schedules,
     required DateTime startDate,
     required DateTime endDate,
-    required String userName,
   }) async {
-    // Загружаем шрифты для поддержки кириллицы
-    final regularFont = await PdfGoogleFonts.robotoRegular();
-    final boldFont = await PdfGoogleFonts.robotoBold();
-    final italicFont = await PdfGoogleFonts.robotoItalic();
+    final user = _auth.currentUser;
+    if (user == null) return File('');
 
-    // Создаем PDF документ
-    final pdf = pw.Document();
+    // Получаем записи о приемах лекарств за указанный период
+    final records =
+        await _firestore
+            .collection('medication_records')
+            .where('userId', isEqualTo: user.uid)
+            .where('timestamp', isGreaterThanOrEqualTo: startDate)
+            .where('timestamp', isLessThanOrEqualTo: endDate)
+            .get();
 
-    // Группируем медикаменты по названию
-    final medicationGroups = <String, List<MedicationSchedule>>{};
-    for (var schedule in schedules) {
-      if (!medicationGroups.containsKey(schedule.medicationName)) {
-        medicationGroups[schedule.medicationName] = [];
+    // Группируем лекарства по названию
+    final Map<String, List<Map<String, dynamic>>> groupedMedications = {};
+    for (var record in records.docs) {
+      final data = record.data();
+      final medicationName = data['medicationName'] as String;
+      if (!groupedMedications.containsKey(medicationName)) {
+        groupedMedications[medicationName] = [];
       }
-      medicationGroups[schedule.medicationName]!.add(schedule);
+      groupedMedications[medicationName]!.add(data);
     }
 
-    // Считаем общую статистику
-    int totalScheduled = schedules.length;
-    int totalTaken = schedules.where((s) => s.taken).length;
-    double takenPercentage =
-        totalScheduled > 0 ? (totalTaken / totalScheduled) * 100 : 0;
+    // Загружаем встроенные шрифты с поддержкой кириллицы
+    final fontData = await rootBundle.load("assets/fonts/Roboto-Regular.ttf");
+    final boldFontData = await rootBundle.load("assets/fonts/Roboto-Bold.ttf");
+    final italicFontData = await rootBundle.load(
+      "assets/fonts/Roboto-Italic.ttf",
+    );
 
-    // Форматируем даты для отображения
-    final dateFormat = DateFormat('dd.MM.yyyy');
-    final dateTimeFormat = DateFormat('dd.MM.yyyy HH:mm');
-    final formattedStartDate = dateFormat.format(startDate);
-    final formattedEndDate = dateFormat.format(endDate);
+    // Создаем PDF документ с заданными шрифтами
+    final pdf = pw.Document();
+
+    // Регистрируем шрифты
+    final ttf = pw.Font.ttf(fontData.buffer.asByteData());
+    final ttfBold = pw.Font.ttf(boldFontData.buffer.asByteData());
+    final ttfItalic = pw.Font.ttf(italicFontData.buffer.asByteData());
 
     // Добавляем страницу с отчетом
     pdf.addPage(
@@ -56,103 +69,141 @@ class ReportService {
             pw.Header(
               level: 0,
               child: pw.Text(
-                'Отчет о приеме медикаментов',
-                style: pw.TextStyle(font: boldFont, fontSize: 20),
+                'Отчет о приемах лекарств',
+                style: pw.TextStyle(font: ttfBold, fontSize: 20),
               ),
             ),
 
-            // Информация о пользователе и периоде
+            // Информация о периоде
             pw.Paragraph(
-              text: 'Пользователь: $userName',
-              style: pw.TextStyle(font: regularFont, fontSize: 14),
+              text:
+                  'Период: с ${DateFormat('dd.MM.yyyy').format(startDate)} по ${DateFormat('dd.MM.yyyy').format(endDate)}',
+              style: pw.TextStyle(font: ttf, fontSize: 14),
             ),
             pw.Paragraph(
-              text: 'Период: с $formattedStartDate по $formattedEndDate',
-              style: pw.TextStyle(font: regularFont, fontSize: 14),
+              text:
+                  'Дата формирования: ${DateFormat('dd.MM.yyyy').format(DateTime.now())}',
+              style: pw.TextStyle(font: ttf, fontSize: 14),
             ),
 
             // Общая статистика
             pw.Header(
               level: 1,
               text: 'Общая статистика',
-              textStyle: pw.TextStyle(font: boldFont, fontSize: 16),
+              textStyle: pw.TextStyle(font: ttfBold, fontSize: 16),
             ),
             pw.Paragraph(
-              text: 'Всего запланировано приемов: $totalScheduled',
-              style: pw.TextStyle(font: regularFont, fontSize: 12),
+              text: 'Всего лекарств: ${groupedMedications.length}',
+              style: pw.TextStyle(font: ttf, fontSize: 12),
             ),
             pw.Paragraph(
-              text:
-                  'Принято медикаментов: $totalTaken (${takenPercentage.toStringAsFixed(1)}%)',
-              style: pw.TextStyle(font: regularFont, fontSize: 12),
+              text: 'Всего записей: ${records.docs.length}',
+              style: pw.TextStyle(font: ttf, fontSize: 12),
             ),
 
             // Детальная информация по каждому медикаменту
             pw.Header(
               level: 1,
-              text: 'Детальная информация',
-              textStyle: pw.TextStyle(font: boldFont, fontSize: 16),
+              text: 'Подробная информация',
+              textStyle: pw.TextStyle(font: ttfBold, fontSize: 16),
             ),
 
             // Для каждого медикамента создаем раздел
-            ...medicationGroups.entries
+            ...groupedMedications.entries
                 .map((entry) {
                   final medicationName = entry.key;
                   final medicationSchedules = entry.value;
-                  final takenCount =
-                      medicationSchedules.where((s) => s.taken).length;
-                  final takenPercent =
-                      medicationSchedules.isNotEmpty
-                          ? (takenCount / medicationSchedules.length) * 100
-                          : 0;
+                  final totalTaken =
+                      medicationSchedules
+                          .where((r) => r['taken'] == true)
+                          .length;
+                  final totalMissed =
+                      medicationSchedules
+                          .where((r) => r['taken'] == false)
+                          .length;
 
                   return [
                     pw.Header(
                       level: 2,
                       text: medicationName,
-                      textStyle: pw.TextStyle(font: boldFont, fontSize: 14),
+                      textStyle: pw.TextStyle(font: ttfBold, fontSize: 14),
                     ),
                     pw.Paragraph(
                       text:
-                          'Запланировано приемов: ${medicationSchedules.length}',
-                      style: pw.TextStyle(font: regularFont, fontSize: 12),
+                          'Всего запланировано: ${medicationSchedules.length}',
+                      style: pw.TextStyle(font: ttf, fontSize: 12),
                     ),
                     pw.Paragraph(
-                      text:
-                          'Принято: $takenCount (${takenPercent.toStringAsFixed(1)}%)',
-                      style: pw.TextStyle(font: regularFont, fontSize: 12),
+                      text: 'Принято: $totalTaken',
+                      style: pw.TextStyle(font: ttf, fontSize: 12),
                     ),
-
-                    // Таблица с записями о приеме
-                    pw.Table.fromTextArray(
-                      headerStyle: pw.TextStyle(font: boldFont, fontSize: 12),
-                      cellStyle: pw.TextStyle(font: regularFont, fontSize: 10),
-                      headerDecoration: pw.BoxDecoration(
-                        color: PdfColors.grey300,
-                      ),
-                      headers: [
-                        'Дата',
-                        'Аптечка',
-                        'Дозировка',
-                        'Статус',
-                        'Время приема',
-                        'Примечания',
+                    pw.Paragraph(
+                      text: 'Пропущено: $totalMissed',
+                      style: pw.TextStyle(font: ttf, fontSize: 12),
+                    ),
+                    pw.Table(
+                      border: pw.TableBorder.all(),
+                      children: [
+                        pw.TableRow(
+                          children: [
+                            pw.Padding(
+                              padding: const pw.EdgeInsets.all(8.0),
+                              child: pw.Text(
+                                'Дата',
+                                style: pw.TextStyle(
+                                  fontWeight: pw.FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            pw.Padding(
+                              padding: const pw.EdgeInsets.all(8.0),
+                              child: pw.Text(
+                                'Время',
+                                style: pw.TextStyle(
+                                  fontWeight: pw.FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            pw.Padding(
+                              padding: const pw.EdgeInsets.all(8.0),
+                              child: pw.Text(
+                                'Статус',
+                                style: pw.TextStyle(
+                                  fontWeight: pw.FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        ...medicationSchedules.map((record) {
+                          final date =
+                              (record['timestamp'] as Timestamp).toDate();
+                          final status =
+                              record['taken'] == true ? 'Принято' : 'Пропущено';
+                          return pw.TableRow(
+                            children: [
+                              pw.Padding(
+                                padding: const pw.EdgeInsets.all(8.0),
+                                child: pw.Text(
+                                  DateFormat('dd.MM.yyyy').format(date),
+                                ),
+                              ),
+                              pw.Padding(
+                                padding: const pw.EdgeInsets.all(8.0),
+                                child: pw.Text(
+                                  DateFormat('HH:mm').format(date),
+                                ),
+                              ),
+                              pw.Padding(
+                                padding: const pw.EdgeInsets.all(8.0),
+                                child: pw.Text(status),
+                              ),
+                            ],
+                          );
+                        }).toList(),
                       ],
-                      data:
-                          medicationSchedules.map((schedule) {
-                            return [
-                              dateFormat.format(schedule.date),
-                              schedule.kitName,
-                              '${schedule.dosage} ${schedule.dimension}',
-                              schedule.taken ? 'Принято' : 'Не принято',
-                              schedule.takenAt != null
-                                  ? dateTimeFormat.format(schedule.takenAt!)
-                                  : '-',
-                              schedule.notes ?? '-',
-                            ];
-                          }).toList(),
                     ),
-                    pw.SizedBox(height: 10),
+                    pw.SizedBox(height: 20),
                   ];
                 })
                 .expand((element) => element)
@@ -166,7 +217,7 @@ class ReportService {
             child: pw.Text(
               'Страница ${context.pageNumber} из ${context.pagesCount}',
               style: pw.TextStyle(
-                font: italicFont,
+                font: ttfItalic,
                 fontSize: 10,
                 color: PdfColors.grey,
               ),
@@ -179,7 +230,7 @@ class ReportService {
     // Сохраняем PDF во временный файл
     final output = await getTemporaryDirectory();
     final reportName =
-        'medication_report_${DateFormat('yyyyMMdd').format(DateTime.now())}.pdf';
+        'отчет_о_приемах_${DateFormat('yyyyMMdd').format(DateTime.now())}.pdf';
     final file = File('${output.path}/$reportName');
     await file.writeAsBytes(await pdf.save());
 
@@ -195,6 +246,6 @@ class ReportService {
   Future<void> sharePdfFile(File file) async {
     await Share.shareXFiles([
       XFile(file.path),
-    ], text: 'Отчет о приеме медикаментов');
+    ], text: 'Отчет о приемах лекарств');
   }
 }
