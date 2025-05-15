@@ -9,6 +9,130 @@ import '../models/user_profile.dart';
 class FamilyGroupService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
+  // Bridge method for TeamParticipant compatibility
+  Stream<List<TeamParticipant>> getTeamParticipants(String groupId) {
+    try {
+      return _firestore
+          .collection('group_members')
+          .where('groupId', isEqualTo: groupId)
+          .snapshots()
+          .map(
+            (snapshot) =>
+                snapshot.docs
+                    .map((doc) {
+                      // Convert GroupMember data to TeamParticipant
+                      final data = doc.data();
+                      return TeamParticipant(
+                        identifier: doc.id,
+                        teamId: data['groupId'] ?? '',
+                        personId: data['userId'] ?? '',
+                        accessLevel: _convertRoleToAccessLevel(data['role'] ?? 'viewer'),
+                        memberStatus: _convertStatusToParticipationStatus(data['status'] ?? 'pending'),
+                        enrollmentDate: data['joinedAt'] != null
+                            ? DateTime.fromMillisecondsSinceEpoch(data['joinedAt'])
+                            : DateTime.now(),
+                      );
+                    })
+                    .toList(),
+          );
+    } catch (e) {
+      print('Ошибка при получении участников группы: $e');
+      rethrow;
+    }
+  }
+
+  // Helper method to convert role string to TeamMemberAccess
+  TeamMemberAccess _convertRoleToAccessLevel(String role) {
+    switch (role) {
+      case 'admin':
+        return TeamMemberAccess.supervisor;
+      case 'editor':
+        return TeamMemberAccess.contributor;
+      case 'viewer':
+      default:
+        return TeamMemberAccess.observer;
+    }
+  }
+
+  // Helper method to convert status string to ParticipationStatus
+  ParticipationStatus _convertStatusToParticipationStatus(String status) {
+    switch (status) {
+      case 'active':
+        return ParticipationStatus.confirmed;
+      case 'removed':
+        return ParticipationStatus.revoked;
+      case 'pending':
+      default:
+        return ParticipationStatus.awaiting;
+    }
+  }
+
+  // Bridge method for updating member role with TeamMemberAccess
+  Future<void> updateMemberRole(
+    String groupId,
+    String userId,
+    TeamMemberAccess accessLevel,
+  ) async {
+    try {
+      final id = '${groupId}_$userId';
+      String role;
+      
+      // Convert TeamMemberAccess to role string
+      switch (accessLevel) {
+        case TeamMemberAccess.supervisor:
+          role = 'admin';
+          break;
+        case TeamMemberAccess.contributor:
+          role = 'editor';
+          break;
+        case TeamMemberAccess.observer:
+        default:
+          role = 'viewer';
+          break;
+      }
+      
+      await _firestore.collection('group_members').doc(id).update({
+        'role': role,
+      });
+    } catch (e) {
+      print('Ошибка при обновлении роли участника: $e');
+      rethrow;
+    }
+  }
+
+  // Bridge method for updating member status with ParticipationStatus
+  Future<void> updateMemberStatus(
+    String groupId,
+    String userId,
+    ParticipationStatus participationStatus,
+  ) async {
+    try {
+      final id = '${groupId}_$userId';
+      String status;
+      
+      // Convert ParticipationStatus to status string
+      switch (participationStatus) {
+        case ParticipationStatus.confirmed:
+          status = 'active';
+          break;
+        case ParticipationStatus.revoked:
+          status = 'removed';
+          break;
+        case ParticipationStatus.awaiting:
+        default:
+          status = 'pending';
+          break;
+      }
+      
+      await _firestore.collection('group_members').doc(id).update({
+        'status': status,
+      });
+    } catch (e) {
+      print('Ошибка при обновлении статуса участника: $e');
+      rethrow;
+    }
+  }
+
   // Создание новой семейной группы
   Future<String> createFamilyGroup({
     required String name,
@@ -223,8 +347,8 @@ class FamilyGroupService {
     }
   }
 
-  // Обновление роли участника
-  Future<void> updateMemberRole(
+  // Обновление роли участника (оригинальный метод)
+  Future<void> updateMemberRoleOriginal(
     String groupId,
     String userId,
     MemberRole role,
@@ -240,8 +364,8 @@ class FamilyGroupService {
     }
   }
 
-  // Обновление статуса участника
-  Future<void> updateMemberStatus(
+  // Обновление статуса участника (оригинальный метод)
+  Future<void> updateMemberStatusOriginal(
     String groupId,
     String userId,
     MemberStatus status,
@@ -531,5 +655,10 @@ class FamilyGroupService {
       print('Ошибка при проверке доступа пользователя к аптечке: $e');
       return false;
     }
+  }
+
+  // Alias for getGroupMembersProfiles to maintain compatibility with TeamParticipant
+  Future<List<UserProfile>> getTeamParticipantProfiles(String groupId) {
+    return getGroupMembersProfiles(groupId);
   }
 }

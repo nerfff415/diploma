@@ -1,20 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import '../services/family_group_service.dart';
-import '../services/auth_service.dart';
-import '../services/user_service.dart';
 import '../models/family_group.dart';
 import '../models/group_member.dart';
 import '../models/user_profile.dart';
-import '../services/first_aid_kit_service.dart';
 import '../models/first_aid_kit.dart';
+import '../services/family_group_service.dart';
+import '../services/auth_service.dart';
+import '../services/user_service.dart';
+import '../services/first_aid_kit_service.dart';
 import 'first_aid_kit_details_screen.dart';
 
 class FamilyGroupDetailsScreen extends StatefulWidget {
   final FamilyGroup group;
 
   const FamilyGroupDetailsScreen({Key? key, required this.group})
-    : super(key: key);
+      : super(key: key);
 
   @override
   State<FamilyGroupDetailsScreen> createState() =>
@@ -22,7 +22,7 @@ class FamilyGroupDetailsScreen extends StatefulWidget {
 }
 
 class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   final FamilyGroupService _groupService = FamilyGroupService();
   final AuthService _authService = AuthService();
   final UserService _userService = UserService();
@@ -76,47 +76,52 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
   }
 
   Widget _buildMembersTab() {
-    return StreamBuilder<List<GroupMember>>(
-      stream: _groupService.getGroupMembers(widget.group.id),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+    return StreamBuilder<List<TeamParticipant>>(
+      stream: _groupService.getTeamParticipants(widget.group.id),
+      builder: (context, membersSnapshot) {
+        if (membersSnapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        if (snapshot.hasError) {
-          return Center(child: Text('Ошибка: ${snapshot.error}'));
+        if (membersSnapshot.hasError) {
+          return Center(child: Text('Ошибка: ${membersSnapshot.error}'));
         }
 
-        final members = snapshot.data ?? [];
+        final members = membersSnapshot.data ?? [];
 
         if (members.isEmpty) {
-          return const Center(child: Text('В группе нет участников'));
+          return const Center(
+            child: Text('В группе нет участников'),
+          );
         }
 
         return FutureBuilder<List<UserProfile>>(
-          future: _groupService.getGroupMembersProfiles(widget.group.id),
+          future: _groupService.getTeamParticipantProfiles(widget.group.id),
           builder: (context, profilesSnapshot) {
             if (profilesSnapshot.connectionState == ConnectionState.waiting) {
               return const Center(child: CircularProgressIndicator());
             }
 
+            if (profilesSnapshot.hasError) {
+              return Center(child: Text('Ошибка: ${profilesSnapshot.error}'));
+            }
+
             final profiles = profilesSnapshot.data ?? [];
 
+            final profileMap = {
+              for (var profile in profiles) profile.userId: profile
+            };
+
             return ListView.builder(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(16),
               itemCount: members.length,
               itemBuilder: (context, index) {
                 final member = members[index];
-                final profile = profiles.firstWhere(
-                  (p) => p.userId == member.userId,
-                  orElse:
-                      () => UserProfile(
-                        userId: member.userId,
-                        firstName: '',
-                        lastName: '',
-                        email: '',
-                      ),
-                );
+                final profile = profileMap[member.personId];
+
+                if (profile == null) {
+                  return const SizedBox.shrink();
+                }
 
                 return _buildMemberCard(context, member, profile);
               },
@@ -129,28 +134,28 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
 
   Widget _buildMemberCard(
     BuildContext context,
-    GroupMember member,
+    TeamParticipant participant,
     UserProfile profile,
   ) {
-    final isCurrentUser = member.userId == _authService.currentUser?.uid;
-    final isAdmin = member.role == MemberRole.admin;
-    final isPending = member.status == MemberStatus.pending;
+    final isCurrentUser = participant.personId == _authService.currentUser?.uid;
+    final isSupervisor = participant.accessLevel == TeamMemberAccess.supervisor;
+    final isAwaiting = participant.memberStatus == ParticipationStatus.awaiting;
 
-    String roleName = '';
-    Color roleColor = Colors.grey;
+    String accessLevelName = '';
+    Color accessLevelColor = Colors.grey;
 
-    switch (member.role) {
-      case MemberRole.admin:
-        roleName = 'Администратор';
-        roleColor = Colors.red;
+    switch (participant.accessLevel) {
+      case TeamMemberAccess.supervisor:
+        accessLevelName = 'Руководитель';
+        accessLevelColor = Colors.red;
         break;
-      case MemberRole.editor:
-        roleName = 'Редактор';
-        roleColor = Colors.blue;
+      case TeamMemberAccess.contributor:
+        accessLevelName = 'Участник';
+        accessLevelColor = Colors.blue;
         break;
-      case MemberRole.viewer:
-        roleName = 'Наблюдатель';
-        roleColor = Colors.grey;
+      case TeamMemberAccess.observer:
+        accessLevelName = 'Читатель';
+        accessLevelColor = Colors.grey;
         break;
     }
 
@@ -186,16 +191,16 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
                     vertical: 2,
                   ),
                   decoration: BoxDecoration(
-                    color: roleColor.withOpacity(0.1),
+                    color: accessLevelColor.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: roleColor),
+                    border: Border.all(color: accessLevelColor),
                   ),
                   child: Text(
-                    roleName,
-                    style: TextStyle(color: roleColor, fontSize: 12),
+                    accessLevelName,
+                    style: TextStyle(color: accessLevelColor, fontSize: 12),
                   ),
                 ),
-                if (isPending)
+                if (isAwaiting)
                   Container(
                     margin: const EdgeInsets.only(left: 8),
                     padding: const EdgeInsets.symmetric(
@@ -222,41 +227,41 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
                   icon: const Icon(Icons.more_vert),
                   onSelected: (value) {
                     switch (value) {
-                      case 'admin':
-                        _updateMemberRole(member, MemberRole.admin);
+                      case 'supervisor':
+                        _updateParticipantAccess(participant, TeamMemberAccess.supervisor);
                         break;
-                      case 'editor':
-                        _updateMemberRole(member, MemberRole.editor);
+                      case 'contributor':
+                        _updateParticipantAccess(participant, TeamMemberAccess.contributor);
                         break;
-                      case 'viewer':
-                        _updateMemberRole(member, MemberRole.viewer);
+                      case 'observer':
+                        _updateParticipantAccess(participant, TeamMemberAccess.observer);
                         break;
                       case 'approve':
-                        _updateMemberStatus(member, MemberStatus.active);
+                        _updateParticipationStatus(participant, ParticipationStatus.confirmed);
                         break;
                       case 'remove':
-                        _showRemoveMemberDialog(context, member, profile);
+                        _showRemoveParticipantDialog(context, participant, profile);
                         break;
                     }
                   },
                   itemBuilder:
                       (context) => [
-                        if (isPending)
+                        if (isAwaiting)
                           const PopupMenuItem(
                             value: 'approve',
                             child: Text('Подтвердить'),
                           ),
                         const PopupMenuItem(
-                          value: 'admin',
-                          child: Text('Сделать администратором'),
+                          value: 'supervisor',
+                          child: Text('Назначить руководителем'),
                         ),
                         const PopupMenuItem(
-                          value: 'editor',
-                          child: Text('Сделать редактором'),
+                          value: 'contributor',
+                          child: Text('Назначить участником'),
                         ),
                         const PopupMenuItem(
-                          value: 'viewer',
-                          child: Text('Сделать наблюдателем'),
+                          value: 'observer',
+                          child: Text('Назначить читателем'),
                         ),
                         const PopupMenuItem(
                           value: 'remove',
@@ -319,7 +324,6 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
           );
         }
 
-        // Получаем информацию о каждой аптечке
         final firstAidKitService = FirstAidKitService();
         return FutureBuilder<List<FirstAidKit>>(
           future: firstAidKitService.getFirstAidKitsByIds(kitIds),
@@ -606,9 +610,9 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
     );
   }
 
-  Future<void> _showRemoveMemberDialog(
+  Future<void> _showRemoveParticipantDialog(
     BuildContext context,
-    GroupMember member,
+    TeamParticipant participant,
     UserProfile profile,
   ) async {
     await showDialog(
@@ -628,8 +632,8 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
                 onPressed: () async {
                   try {
                     await _groupService.removeMemberFromGroup(
-                      member.groupId,
-                      member.userId,
+                      participant.teamId,
+                      participant.personId,
                     );
 
                     if (mounted) {
@@ -666,15 +670,12 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
       return;
     }
 
-    // Получаем список аптечек пользователя
     final firstAidKitService = FirstAidKitService();
     List<FirstAidKit> userKits = [];
 
     try {
-      // Получаем текущие аптечки группы
       final groupKitIds = await _groupService.getGroupKits(widget.group.id);
 
-      // Получаем все аптечки пользователя
       await showDialog(
         context: context,
         barrierDismissible: false,
@@ -705,7 +706,6 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
 
               userKits = snapshot.data ?? [];
 
-              // Фильтруем аптечки, которые уже добавлены в группу
               final availableKits =
                   userKits
                       .where((kit) => !groupKitIds.contains(kit.id))
@@ -726,7 +726,6 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
                     TextButton(
                       onPressed: () {
                         Navigator.pop(context);
-                        // Здесь можно добавить переход на экран создания аптечки
                       },
                       child: const Text('Создать аптечку'),
                     ),
@@ -840,9 +839,13 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
     );
   }
 
-  void _updateMemberRole(GroupMember member, MemberRole role) async {
+  void _updateParticipantAccess(TeamParticipant participant, TeamMemberAccess accessLevel) async {
     try {
-      await _groupService.updateMemberRole(member.groupId, member.userId, role);
+      await _groupService.updateMemberRole(
+        participant.teamId, 
+        participant.personId, 
+        accessLevel
+      );
 
       ScaffoldMessenger.of(
         context,
@@ -854,11 +857,11 @@ class _FamilyGroupDetailsScreenState extends State<FamilyGroupDetailsScreen>
     }
   }
 
-  void _updateMemberStatus(GroupMember member, MemberStatus status) async {
+  void _updateParticipationStatus(TeamParticipant participant, ParticipationStatus status) async {
     try {
       await _groupService.updateMemberStatus(
-        member.groupId,
-        member.userId,
+        participant.teamId,
+        participant.personId,
         status,
       );
 

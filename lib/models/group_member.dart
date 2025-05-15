@@ -1,9 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+// Original role and status enums
 enum MemberRole { admin, editor, viewer }
 
 enum MemberStatus { active, pending, removed }
 
+// Original GroupMember class
 class GroupMember {
   final String id; // Формат: {group_id}_{user_id}
   final String groupId;
@@ -108,6 +110,139 @@ class GroupMember {
       role: this.role,
       status: newStatus,
       joinedAt: this.joinedAt,
+    );
+  }
+}
+
+// Redefining member permission levels with different names
+enum TeamMemberAccess { 
+  supervisor,  // Previously admin
+  contributor, // Previously editor
+  observer     // Previously viewer
+}
+
+// Redefining member participation states
+enum ParticipationStatus { 
+  confirmed,  // Previously active
+  awaiting,   // Previously pending
+  revoked     // Previously removed
+}
+
+class TeamParticipant {
+  // Unique identifier for the participant record
+  final String identifier; // Previously id
+  
+  // References to related entities
+  final String teamId;     // Previously groupId
+  final String personId;   // Previously userId
+  
+  // Permission and state information
+  final TeamMemberAccess accessLevel;
+  final ParticipationStatus memberStatus;
+  
+  // Tracking information
+  final DateTime enrollmentDate; // Previously joinedAt
+
+  TeamParticipant({
+    required this.identifier,
+    required this.teamId,
+    required this.personId,
+    required this.accessLevel,
+    required this.memberStatus,
+    required this.enrollmentDate,
+  });
+
+  // Convert to database format
+  Map<String, dynamic> toDataMap() {
+    return {
+      'teamId': teamId,
+      'personId': personId,
+      'accessLevel': accessLevel.toString().split('.').last,
+      'memberStatus': memberStatus.toString().split('.').last,
+      'enrollmentDate': enrollmentDate.millisecondsSinceEpoch,
+    };
+  }
+
+  // Create from database data
+  factory TeamParticipant.fromDataMap(Map<String, dynamic> data, String recordId) {
+    return TeamParticipant(
+      identifier: recordId,
+      teamId: data['teamId'] ?? '',
+      personId: data['personId'] ?? '',
+      accessLevel: _parseAccessLevel(data['accessLevel'] ?? 'observer'),
+      memberStatus: _parseParticipationStatus(data['memberStatus'] ?? 'awaiting'),
+      enrollmentDate:
+          data['enrollmentDate'] != null
+              ? DateTime.fromMillisecondsSinceEpoch(data['enrollmentDate'])
+              : DateTime.now(),
+    );
+  }
+
+  // Helper method to parse access level string
+  static TeamMemberAccess _parseAccessLevel(String levelString) {
+    switch (levelString) {
+      case 'supervisor':
+        return TeamMemberAccess.supervisor;
+      case 'contributor':
+        return TeamMemberAccess.contributor;
+      case 'observer':
+      default:
+        return TeamMemberAccess.observer;
+    }
+  }
+
+  // Helper method to parse participation status string
+  static ParticipationStatus _parseParticipationStatus(String statusString) {
+    switch (statusString) {
+      case 'confirmed':
+        return ParticipationStatus.confirmed;
+      case 'revoked':
+        return ParticipationStatus.revoked;
+      case 'awaiting':
+      default:
+        return ParticipationStatus.awaiting;
+    }
+  }
+
+  // Factory method to create a new team participant
+  static TeamParticipant createNew({
+    required String teamId,
+    required String personId,
+    TeamMemberAccess accessLevel = TeamMemberAccess.observer,
+    ParticipationStatus memberStatus = ParticipationStatus.awaiting,
+  }) {
+    final compositeId = '${teamId}_${personId}';
+    return TeamParticipant(
+      identifier: compositeId,
+      teamId: teamId,
+      personId: personId,
+      accessLevel: accessLevel,
+      memberStatus: memberStatus,
+      enrollmentDate: DateTime.now(),
+    );
+  }
+
+  // Create a copy with updated access level
+  TeamParticipant withUpdatedAccessLevel(TeamMemberAccess newAccessLevel) {
+    return TeamParticipant(
+      identifier: this.identifier,
+      teamId: this.teamId,
+      personId: this.personId,
+      accessLevel: newAccessLevel,
+      memberStatus: this.memberStatus,
+      enrollmentDate: this.enrollmentDate,
+    );
+  }
+
+  // Create a copy with updated participation status
+  TeamParticipant withUpdatedStatus(ParticipationStatus newStatus) {
+    return TeamParticipant(
+      identifier: this.identifier,
+      teamId: this.teamId,
+      personId: this.personId,
+      accessLevel: this.accessLevel,
+      memberStatus: newStatus,
+      enrollmentDate: this.enrollmentDate,
     );
   }
 }
