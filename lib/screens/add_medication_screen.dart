@@ -116,27 +116,11 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
   }
 
   Future<void> _selectDate(BuildContext context) async {
-    final initialDate = _expiryDate;
-    final firstDate = DateTime.now(); // Не позволяем выбрать прошедшую дату
-    final lastDate = DateTime.now().add(
-      const Duration(days: 5 * 365),
-    ); // Максимум 5 лет вперед
-
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: initialDate,
-      firstDate: firstDate,
-      lastDate: lastDate,
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: ColorScheme.light(
-              primary: Theme.of(context).colorScheme.primary,
-            ),
-          ),
-          child: child!,
-        );
-      },
+      initialDate: _expiryDate,
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 3650)),
     );
 
     if (picked != null && picked != _expiryDate) {
@@ -146,64 +130,119 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     }
   }
 
+  /// Инициирует процесс сканирования штрих-кода и обработки результатов
   Future<void> _scanBarcode() async {
     try {
-      final result = await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder:
-              (context) => Scaffold(
-                appBar: AppBar(
-                  title: const Text('Scan Barcode'),
-                  backgroundColor: Colors.red,
-                ),
-                body: MobileScanner(
-                  onDetect: (capture) async {
-                    final List<Barcode> barcodes = capture.barcodes;
-                    if (barcodes.isNotEmpty) {
-                      final String code = barcodes.first.rawValue ?? '';
-                      final medicationDetails = _medicationDataService
-                          .findMedicationByBarcode(code);
-
-                      // Log the barcode scan result
-                      await BarcodeLogger.logBarcode(
-                        code,
-                        medicationDetails?['name'],
-                      );
-
-                      if (medicationDetails != null) {
-                        setState(() {
-                          _nameController.text = medicationDetails['name'];
-                          _barcodeController.text = code;
-                          if (medicationDetails['amount'] != null) {
-                            _quantityController.text =
-                                medicationDetails['amount'].toString();
-                          }
-                          _descriptionController.text =
-                              medicationDetails['description'] ?? '';
-                        });
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              'Medication not found in database. Barcode: $code',
-                            ),
-                            duration: const Duration(seconds: 5),
-                          ),
-                        );
-                      }
-                      Navigator.pop(context);
-                    }
-                  },
-                ),
-              ),
-        ),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error scanning barcode: $e')));
+      // Запускаем экран сканирования и ожидаем результат
+      await _navigateToScannerScreen();
+    } catch (error) {
+      // Обрабатываем возможные ошибки
+      _handleScanningError(error);
     }
+  }
+  
+  /// Открывает экран сканирования штрих-кода
+  Future<void> _navigateToScannerScreen() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => _buildScannerScreen(),
+      ),
+    );
+  }
+  
+  /// Создает экран сканирования штрих-кода
+  Widget _buildScannerScreen() {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Сканирование штрих-кода'),
+        backgroundColor: Colors.red,
+      ),
+      body: MobileScanner(
+        onDetect: _processScanResults,
+      ),
+    );
+  }
+  
+  /// Обрабатывает результаты сканирования
+  void _processScanResults(BarcodeCapture capture) async {
+    // Извлекаем данные штрих-кода
+    final List<Barcode> detectedCodes = capture.barcodes;
+    
+    // Проверяем, что штрих-коды были обнаружены
+    if (detectedCodes.isEmpty) return;
+    
+    // Берем первый обнаруженный штрих-код
+    final String barcodeValue = detectedCodes.first.rawValue ?? '';
+    
+    // Ищем информацию о лекарстве по штрих-коду
+    final medicationInfo = await _findMedicationByBarcode(barcodeValue);
+    
+    // Закрываем экран сканирования
+    if (mounted) Navigator.pop(context);
+  }
+  
+  /// Поиск информации о лекарстве по штрих-коду
+  Future<Map<String, dynamic>?> _findMedicationByBarcode(String barcode) async {
+    // Получаем информацию о лекарстве
+    final medicationDetails = _medicationDataService.findMedicationByBarcode(barcode);
+    
+    // Логируем результат сканирования
+    await BarcodeLogger.logBarcode(barcode, medicationDetails?['name']);
+    
+    // Если информация найдена, заполняем поля формы
+    if (medicationDetails != null) {
+      _updateFormWithMedicationDetails(medicationDetails, barcode);
+    } else {
+      _showMedicationNotFoundMessage(barcode);
+    }
+    
+    return medicationDetails;
+  }
+  
+  /// Обновляет поля формы данными о лекарстве
+  void _updateFormWithMedicationDetails(Map<String, dynamic> details, String barcode) {
+    if (!mounted) return;
+    
+    setState(() {
+      // Заполняем название препарата
+      _nameController.text = details['name'];
+      
+      // Заполняем штрих-код
+      _barcodeController.text = barcode;
+      
+      // Заполняем количество, если доступно
+      if (details['amount'] != null) {
+        _quantityController.text = details['amount'].toString();
+      }
+      
+      // Заполняем описание, если доступно
+      _descriptionController.text = details['description'] ?? '';
+    });
+  }
+  
+  /// Показывает сообщение о том, что лекарство не найдено
+  void _showMedicationNotFoundMessage(String barcode) {
+    if (!mounted) return;
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Лекарство не найдено в базе данных. Штрих-код: $barcode'),
+        duration: const Duration(seconds: 5),
+      ),
+    );
+  }
+  
+  /// Обрабатывает ошибки сканирования
+  void _handleScanningError(dynamic error) {
+    if (!mounted) return;
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Ошибка при сканировании штрих-кода: $error'),
+        backgroundColor: Colors.red,
+      ),
+    );
   }
 
   @override
