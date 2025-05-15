@@ -3,165 +3,183 @@ import 'user_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class AuthService {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final UserService _userService = UserService();
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  // Инициализация сервисов Firebase
+  final _authProvider = FirebaseAuth.instance;
+  final _dbProvider = FirebaseFirestore.instance;
+  final _userProvider = UserService();
 
-  // Получение потока обновлений состояния пользователя
-  Stream<User?> get userStream => _auth.authStateChanges();
+  // Поток состояния аутентификации
+  Stream<User?> get userStream => _authProvider.authStateChanges();
 
-  // Получение текущего пользователя
-  User? get currentUser => _auth.currentUser;
+  // Текущий пользователь
+  User? get currentUser => _authProvider.currentUser;
 
-  // Регистрация нового пользователя
+  // Создание новой учетной записи
   Future<void> register(String email, String password, String name) async {
+    UserCredential? credential;
+    
     try {
-      // Создаем пользователя в Firebase Auth
-      await _auth.createUserWithEmailAndPassword(
+      // Шаг 1: Создание записи в системе аутентификации
+      credential = await _authProvider.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
-
-      // Добавляем небольшую задержку, чтобы дать Firebase время обновить состояние
+      
+      // Ожидание обновления состояния
       await Future.delayed(const Duration(milliseconds: 1000));
-
-      // Получаем текущего пользователя после создания
-      final user = _auth.currentUser;
-      if (user != null) {
-        // Создаем документ пользователя в Firestore
-        await _firestore.collection('users').doc(user.uid).set({
-          'name': name,
-          'email': email,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
+      
+      // Шаг 2: Проверка успешного создания и сохранение профиля
+      if (credential.user != null) {
+        await _saveUserProfile(credential.user!.uid, name, email);
       } else {
-        throw Exception('Пользователь не был создан');
+        throw Exception('Ошибка создания учетной записи');
       }
+    } on FirebaseAuthException catch (authError) {
+      _handleRegistrationError(authError);
     } catch (e) {
-      print('Error during registration: $e');
-
-      // Проверяем, является ли ошибка проблемой преобразования типов PigeonUserDetails
-      if (e.toString().contains('PigeonUserDetails')) {
-        // Если текущий пользователь существует, значит регистрация прошла успешно
-        if (_auth.currentUser != null) {
-          print(
-            'Пользователь зарегистрирован успешно, несмотря на ошибку: ${_auth.currentUser?.email}',
-          );
-
-          // Создаем документ пользователя в Firestore
-          await _firestore.collection('users').doc(_auth.currentUser!.uid).set({
-            'name': name,
-            'email': email,
-            'createdAt': FieldValue.serverTimestamp(),
-          });
-          return;
-        }
+      // Обработка особого случая с PigeonUserDetails
+      if (_isPigeonUserDetailsError(e) && _authProvider.currentUser != null) {
+        await _saveUserProfile(_authProvider.currentUser!.uid, name, email);
+        return;
       }
       rethrow;
+    }
+  }
+  
+  // Сохранение профиля пользователя в базе данных
+  Future<void> _saveUserProfile(String userId, String name, String email) async {
+    await _dbProvider.collection('users').doc(userId).set({
+      'name': name,
+      'email': email,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+  
+  // Проверка на специфическую ошибку PigeonUserDetails
+  bool _isPigeonUserDetailsError(dynamic error) {
+    return error.toString().contains('PigeonUserDetails');
+  }
+  
+  // Обработка ошибок регистрации
+  void _handleRegistrationError(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'email-already-in-use':
+        throw Exception('Этот email уже используется');
+      case 'invalid-email':
+        throw Exception('Некорректный формат email');
+      case 'operation-not-allowed':
+        throw Exception('Регистрация с email и паролем отключена');
+      case 'weak-password':
+        throw Exception('Пароль слишком простой');
+      default:
+        throw Exception('Ошибка регистрации: ${e.message}');
     }
   }
 
   // Вход в систему
   Future<void> signIn(String email, String password) async {
     try {
-      print('Attempting to sign in with email: $email');
-
-      try {
-        // Пробуем войти
-        await _auth.signInWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
-
-        // Добавляем небольшую задержку, чтобы дать Firebase время обновить состояние
-        await Future.delayed(const Duration(milliseconds: 1000));
-
-        // Проверяем, что пользователь действительно вошел
-        final currentUser = _auth.currentUser;
-        if (currentUser == null) {
-          print('Current user is null after sign in');
-          throw Exception('Ошибка при входе. Попробуйте еще раз');
-        }
-
-        print('Sign in successful for user: ${currentUser.email}');
-      } catch (e) {
-        print('Firebase sign in error: $e');
-
-        // Проверяем, является ли ошибка проблемой преобразования типов PigeonUserDetails
-        if (e.toString().contains('PigeonUserDetails')) {
-          // Если текущий пользователь существует, значит вход прошел успешно
-          if (_auth.currentUser != null) {
-            print(
-              'User signed in successfully despite PigeonUserDetails error',
-            );
-            return;
-          }
-        }
-
-        if (e is FirebaseAuthException) {
-          print('Firebase error code: ${e.code}');
-          print('Firebase error message: ${e.message}');
-
-          String errorMessage;
-          switch (e.code) {
-            case 'invalid-credential':
-            case 'wrong-password':
-              errorMessage = 'Неверный email или пароль';
-              break;
-            case 'user-not-found':
-              errorMessage = 'Пользователь с таким email не найден';
-              break;
-            case 'user-disabled':
-              errorMessage = 'Аккаунт заблокирован';
-              break;
-            case 'too-many-requests':
-              errorMessage = 'Слишком много попыток входа. Попробуйте позже';
-              break;
-            case 'network-request-failed':
-              errorMessage = 'Ошибка сети. Проверьте подключение к интернету';
-              break;
-            case 'invalid-email':
-              errorMessage = 'Некорректный формат email';
-              break;
-            default:
-              errorMessage = 'Ошибка при входе: ${e.message}';
-          }
-
-          throw Exception(errorMessage);
-        } else {
-          print('Non-Firebase error during sign in: $e');
-          throw Exception('Произошла ошибка при входе. Попробуйте позже');
-        }
+      // Попытка аутентификации
+      await _performSignIn(email, password);
+      
+      // Проверка состояния после аутентификации
+      if (_authProvider.currentUser == null) {
+        throw Exception('Не удалось выполнить вход');
       }
+    } on FirebaseAuthException catch (authError) {
+      throw _mapAuthExceptionToUserMessage(authError);
     } catch (e) {
-      print('Final error in signIn: $e');
-      rethrow;
+      // Проверка на специфическую ошибку PigeonUserDetails
+      if (_isPigeonUserDetailsError(e) && _authProvider.currentUser != null) {
+        return; // Вход успешен несмотря на ошибку
+      }
+      throw Exception('Произошла ошибка при входе');
     }
   }
+  
+  // Выполнение процесса входа
+  Future<void> _performSignIn(String email, String password) async {
+    await _authProvider.signInWithEmailAndPassword(
+      email: email,
+      password: password,
+    );
+    
+    // Ожидание обновления состояния
+    await Future.delayed(const Duration(milliseconds: 1000));
+  }
+  
+  // Преобразование технических ошибок в понятные пользователю сообщения
+  Exception _mapAuthExceptionToUserMessage(FirebaseAuthException e) {
+    String message;
+    
+    switch (e.code) {
+      case 'invalid-credential':
+      case 'wrong-password':
+        message = 'Неверный email или пароль';
+        break;
+      case 'user-not-found':
+        message = 'Пользователь с таким email не найден';
+        break;
+      case 'user-disabled':
+        message = 'Аккаунт заблокирован';
+        break;
+      case 'too-many-requests':
+        message = 'Слишком много попыток входа. Попробуйте позже';
+        break;
+      case 'network-request-failed':
+        message = 'Ошибка сети. Проверьте подключение к интернету';
+        break;
+      case 'invalid-email':
+        message = 'Некорректный формат email';
+        break;
+      default:
+        message = 'Ошибка при входе: ${e.message}';
+    }
+    
+    return Exception(message);
+  }
 
-  // Выход из аккаунта
+  // Выход из системы
   Future<void> signOut() async {
     try {
-      await _auth.signOut();
+      await _authProvider.signOut();
     } catch (e) {
-      print('Ошибка при выходе: $e');
-      rethrow;
+      throw Exception('Не удалось выполнить выход из системы');
     }
   }
 
-  // Сброс пароля
+  // Восстановление пароля
   Future<void> resetPassword(String email) async {
     try {
-      await _auth.sendPasswordResetEmail(email: email);
+      await _authProvider.sendPasswordResetEmail(email: email);
+    } on FirebaseAuthException catch (e) {
+      throw _mapPasswordResetExceptionToUserMessage(e);
     } catch (e) {
-      print('Ошибка при сбросе пароля: $e');
-      rethrow;
+      throw Exception('Ошибка при восстановлении пароля');
     }
   }
+  
+  // Преобразование ошибок восстановления пароля в понятные сообщения
+  Exception _mapPasswordResetExceptionToUserMessage(FirebaseAuthException e) {
+    String message;
+    
+    switch (e.code) {
+      case 'user-not-found':
+        message = 'Пользователь с таким email не найден';
+        break;
+      case 'invalid-email':
+        message = 'Некорректный формат email';
+        break;
+      default:
+        message = 'Ошибка при восстановлении пароля: ${e.message}';
+    }
+    
+    return Exception(message);
+  }
 
-  // Проверка, аутентифицирован ли пользователь
+  // Проверка состояния аутентификации
   bool get isAuthenticated => currentUser != null;
 
-  // Получение email пользователя
+  // Получение email текущего пользователя
   String? get userEmail => currentUser?.email;
 }
